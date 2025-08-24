@@ -2,8 +2,15 @@ const fetch = require('node-fetch');
 const puppeteer = require('puppeteer');
 const readline = require('readline');
 
-// Interactive setup function
-async function setupConfiguration() {
+// Hardcoded endpoints - no more configuration needed
+const AMAZON_WEBSITE_URL = 'https://hiring.amazon.com/app#/jobSearch';
+const AMAZON_GRAPHQL_URL = 'https://e5mquma77feepi2bdn4d6h3mpu.appsync-api.us-east-1.amazonaws.com/graphql';
+const POLLING_INTERVAL = 1000; // 1 second
+const MAX_JOBS_PER_ALERT = 5;
+const TOKEN_REFRESH_INTERVAL = 55 * 60 * 1000; // 55 minutes (refresh before 59-minute expiry)
+
+// Simple setup function - only Telegram credentials
+async function setupTelegramCredentials() {
     const rl = readline.createInterface({
         input: process.stdin,
         output: process.stdout
@@ -15,8 +22,9 @@ async function setupConfiguration() {
         });
     };
 
-    console.log('🔧 Amazon Job Monitor Setup');
-    console.log('==========================\n');
+    console.log('🤖 Amazon Job Monitor - Automated Token Extraction');
+    console.log('================================================\n');
+    console.log('📱 Please provide your Telegram credentials:\n');
 
     // Get Telegram Bot Token
     let telegramBotToken = await question('Enter your Telegram Bot Token: ');
@@ -26,54 +34,24 @@ async function setupConfiguration() {
     }
 
     // Get Telegram Channel ID
-    let telegramChannelId = await question('Enter your Telegram Channel ID (e.g., @channelname or -1001234567890): ');
+    let telegramChannelId = await question('Enter your Telegram Channel ID (e.g., @channelname): ');
     while (!telegramChannelId.trim()) {
         console.log('❌ Telegram Channel ID is required!');
-        telegramChannelId = await question('Enter your Telegram Channel ID (e.g., @channelname or -1001234567890): ');
-    }
-
-    // Get Amazon API URL
-    let amazonApiUrl = await question('Enter Amazon API URL (press Enter for default): ');
-    if (!amazonApiUrl.trim()) {
-        amazonApiUrl = 'https://e5mquma77feepi2bdn4d6h3mpu.appsync-api.us-east-1.amazonaws.com/graphql';
-        console.log('✅ Using default Amazon API URL');
-    }
-
-    // Get Polling Interval
-    let pollingInterval = await question('Enter polling interval in milliseconds (press Enter for default 1000): ');
-    if (!pollingInterval.trim()) {
-        pollingInterval = '1000';
-        console.log('✅ Using default polling interval: 1000ms');
-    }
-
-    // Get Max Jobs Per Alert
-    let maxJobsPerAlert = await question('Enter max jobs per alert (press Enter for default 5): ');
-    if (!maxJobsPerAlert.trim()) {
-        maxJobsPerAlert = '5';
-        console.log('✅ Using default max jobs per alert: 5');
+        telegramChannelId = await question('Enter your Telegram Channel ID: ');
     }
 
     rl.close();
 
-    // Validate inputs
-    if (isNaN(pollingInterval) || parseInt(pollingInterval) < 500) {
-        console.log('⚠️  Polling interval must be at least 500ms. Using 1000ms.');
-        pollingInterval = '1000';
-    }
-
-    if (isNaN(maxJobsPerAlert) || parseInt(maxJobsPerAlert) < 1) {
-        console.log('⚠️  Max jobs per alert must be at least 1. Using 5.');
-        maxJobsPerAlert = '5';
-    }
-
-    console.log('\n✅ Configuration completed!\n');
+    console.log('\n✅ Telegram credentials saved!');
+    console.log(`🌐 Using hardcoded endpoints:`);
+    console.log(`   Website: ${AMAZON_WEBSITE_URL}`);
+    console.log(`   GraphQL: ${AMAZON_GRAPHQL_URL}`);
+    console.log(`   Polling: ${POLLING_INTERVAL}ms`);
+    console.log(`   Token Refresh: Every 55 minutes\n`);
 
     return {
         TELEGRAM_BOT_TOKEN: telegramBotToken.trim(),
-        TELEGRAM_CHANNEL_ID: telegramChannelId.trim(),
-        AMAZON_API_URL: amazonApiUrl.trim(),
-        POLLING_INTERVAL: parseInt(pollingInterval),
-        MAX_JOBS_PER_ALERT: parseInt(maxJobsPerAlert)
+        TELEGRAM_CHANNEL_ID: telegramChannelId.trim()
     };
 }
 
@@ -87,6 +65,7 @@ let currentAuthToken = null;
 let tokenExpiryTime = null;
 let browser = null;
 let page = null;
+let tokenRefreshInterval = null;
 
 // Amazon GraphQL Query
 const amazonQuery = {
@@ -154,10 +133,10 @@ const amazonQuery = {
 // Initialize browser for token extraction
 async function initializeBrowser() {
     try {
-        console.log(`[${new Date().toISOString()}] Initializing browser for token extraction...`);
+        console.log(`[${new Date().toISOString()}] 🚀 Initializing browser for token extraction...`);
         
         browser = await puppeteer.launch({
-            headless: true,
+            headless: 'new',
             args: [
                 '--no-sandbox',
                 '--disable-setuid-sandbox',
@@ -172,90 +151,171 @@ async function initializeBrowser() {
         page = await browser.newPage();
         
         // Set user agent
-        await page.setUserAgent('Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36');
+        await page.setUserAgent('Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36');
         
-        console.log(`[${new Date().toISOString()}] Browser initialized successfully`);
+        console.log(`[${new Date().toISOString()}] ✅ Browser initialized successfully`);
         
     } catch (error) {
-        console.error(`[${new Date().toISOString()}] Error initializing browser:`, error.message);
+        console.error(`[${new Date().toISOString()}] ❌ Error initializing browser:`, error.message);
         throw error;
     }
 }
 
-// Extract auth token from Amazon hiring page
+// Decode JWT token to get expiration
+function decodeJWT(token) {
+    try {
+        const parts = token.split('.');
+        if (parts.length !== 3) {
+            return null;
+        }
+        const payload = JSON.parse(Buffer.from(parts[1], 'base64').toString('utf8'));
+        return payload;
+    } catch (error) {
+        console.error(`[${new Date().toISOString()}] ❌ Error decoding JWT:`, error.message);
+        return null;
+    }
+}
+
+// Extract auth token from Amazon hiring page using proven method
 async function extractAuthToken() {
     try {
-        console.log(`[${new Date().toISOString()}] Extracting auth token...`);
+        console.log(`[${new Date().toISOString()}] 🚀 Starting token extraction process...`);
         
         // Navigate to Amazon hiring page
-        await page.goto('https://hiring.amazon.ca/app#/jobSearch', {
-            waitUntil: 'networkidle2',
+        console.log(`[${new Date().toISOString()}] 📡 Navigating to Amazon website...`);
+        await page.goto(AMAZON_WEBSITE_URL, {
+            waitUntil: 'networkidle0',
             timeout: 30000
         });
         
-        // Wait for page to load
-        await page.waitForTimeout(5000);
+        console.log(`[${new Date().toISOString()}] ⏱️  Waiting for page to fully load...`);
+        await new Promise(resolve => setTimeout(resolve, 10000)); // 10 seconds wait
         
-        // Listen for GraphQL requests and extract token
-        const token = await page.evaluate(() => {
-            return new Promise((resolve) => {
-                const originalFetch = window.fetch;
-                let authToken = null;
+        console.log(`[${new Date().toISOString()}] 🔍 Scanning for JWT tokens...`);
+        
+        // Extract the JWT token from localStorage using our proven method
+        const extractedToken = await page.evaluate(() => {
+            try {
+                // Method 1: Check localStorage for sessionToken (our target)
+                const sessionToken = localStorage.getItem('sessionToken');
+                if (sessionToken && sessionToken.startsWith('eyJ')) {
+                    console.log('✅ Found JWT sessionToken in localStorage');
+                    return {
+                        token: sessionToken,
+                        source: 'localStorage[sessionToken]',
+                        type: 'JWT'
+                    };
+                }
                 
-                window.fetch = function(...args) {
-                    const [url, options] = args;
+                // Method 2: Check all localStorage items for JWT tokens
+                for (let i = 0; i < localStorage.length; i++) {
+                    const key = localStorage.key(i);
+                    const value = localStorage.getItem(key);
                     
-                    if (url.includes('appsync-api.us-east-1.amazonaws.com/graphql')) {
-                        if (options && options.headers && options.headers.authorization) {
-                            authToken = options.headers.authorization.replace('Bearer ', '');
-                            console.log('Auth token captured:', authToken);
-                        }
+                    if (value && value.startsWith('eyJ') && value.length > 100) {
+                        console.log(`✅ Found JWT token in localStorage[${key}]`);
+                        return {
+                            token: value,
+                            source: `localStorage[${key}]`,
+                            type: 'JWT'
+                        };
                     }
-                    
-                    return originalFetch.apply(this, args);
-                };
+                }
                 
-                // Trigger a job search to capture the token
-                setTimeout(() => {
-                    // Simulate a job search request
-                    fetch('https://e5mquma77feepi2bdn4d6h3mpu.appsync-api.us-east-1.amazonaws.com/graphql', {
-                        method: 'POST',
-                        headers: {
-                            'Content-Type': 'application/json',
-                            'Accept': '*/*'
-                        },
-                        body: JSON.stringify({
-                            operationName: 'searchJobCardsByLocation',
-                            variables: {
-                                searchJobRequest: {
-                                    locale: 'en-CA',
-                                    country: 'Canada',
-                                    pageSize: 10
-                                }
-                            }
-                        })
-                    });
+                // Method 3: Check sessionStorage
+                for (let i = 0; i < sessionStorage.length; i++) {
+                    const key = sessionStorage.key(i);
+                    const value = sessionStorage.getItem(key);
                     
-                    setTimeout(() => {
-                        resolve(authToken);
-                    }, 3000);
-                }, 2000);
-            });
+                    if (value && value.startsWith('eyJ') && value.length > 100) {
+                        console.log(`✅ Found JWT token in sessionStorage[${key}]`);
+                        return {
+                            token: value,
+                            source: `sessionStorage[${key}]`,
+                            type: 'JWT'
+                        };
+                    }
+                }
+                
+                console.log('❌ No JWT tokens found in storage');
+                return null;
+                
+            } catch (error) {
+                console.error('❌ Error during token extraction:', error.message);
+                return null;
+            }
         });
         
-        if (token) {
-            currentAuthToken = token;
-            tokenExpiryTime = new Date(Date.now() + 25 * 60 * 1000); // 25 minutes from now
-            console.log(`[${new Date().toISOString()}] Auth token extracted successfully`);
-            console.log(`[${new Date().toISOString()}] Token expires at: ${tokenExpiryTime.toISOString()}`);
-            return token;
+        if (!extractedToken || !extractedToken.token) {
+            throw new Error('No JWT token found in localStorage or sessionStorage');
+        }
+        
+        console.log(`[${new Date().toISOString()}] ✅ Token extracted successfully!`);
+        
+        // Decode JWT to get expiration
+        const decoded = decodeJWT(extractedToken.token);
+        if (decoded && decoded.exp) {
+            const expiryDate = new Date(decoded.exp * 1000);
+            const timeLeft = expiryDate.getTime() - Date.now();
+            const minutesLeft = Math.floor(timeLeft / 60000);
+            const secondsLeft = Math.floor((timeLeft % 60000) / 1000);
+            
+            // Print in the exact format you requested
+            console.log(`\n🔑 Token Extraction Results:`);
+            console.log(`   Source: ${extractedToken.source}`);
+            console.log(`   URL: localStorage`);
+            console.log(`   Token: ${extractedToken.token.substring(0, 50)}...`);
+            console.log(`   Type: JWT Token`);
+            console.log(`   Issued: ${new Date(decoded.iat * 1000).toISOString()}`);
+            console.log(`   Expires: ✅ Expires in ${minutesLeft}m ${secondsLeft}s (${expiryDate.toISOString()})\n`);
+            
+            currentAuthToken = extractedToken.token;
+            tokenExpiryTime = expiryDate;
+            
+            // Test the token immediately
+            console.log(`[${new Date().toISOString()}] 🧪 Testing token with GraphQL endpoint...`);
+            await testToken(extractedToken.token);
+            
+            return extractedToken.token;
         } else {
-            throw new Error('Failed to extract auth token');
+            console.log(`[${new Date().toISOString()}] ⚠️  Warning: Could not decode JWT expiration, assuming 59 minutes`);
+            currentAuthToken = extractedToken.token;
+            tokenExpiryTime = new Date(Date.now() + 59 * 60 * 1000); // 59 minutes from now
+            return extractedToken.token;
         }
         
     } catch (error) {
-        console.error(`[${new Date().toISOString()}] Error extracting auth token:`, error.message);
+        console.error(`[${new Date().toISOString()}] ❌ Error extracting auth token:`, error.message);
         throw error;
+    }
+}
+
+// Test if the extracted token works
+async function testToken(token) {
+    try {
+        const testResponse = await fetch(AMAZON_GRAPHQL_URL, {
+            method: 'POST',
+            headers: {
+                'Content-Type': 'application/json',
+                'Authorization': `Bearer ${token}`
+            },
+            body: JSON.stringify({
+                query: '{ __schema { types { name } } }'
+            })
+        });
+        
+        console.log(`[${new Date().toISOString()}] 🧪 Token test result: ${testResponse.status} ${testResponse.statusText}`);
+        
+        if (testResponse.ok) {
+            console.log(`[${new Date().toISOString()}] ✅ Token is valid and working!`);
+        } else if (testResponse.status === 403) {
+            console.log(`[${new Date().toISOString()}] ⚠️  Token received 403 - may need specific query format`);
+        } else {
+            console.log(`[${new Date().toISOString()}] ❌ Token test failed`);
+        }
+        
+    } catch (error) {
+        console.log(`[${new Date().toISOString()}] ❌ Error testing token: ${error.message}`);
     }
 }
 
@@ -272,27 +332,30 @@ function isTokenExpired() {
 // Refresh auth token
 async function refreshAuthToken() {
     try {
-        console.log(`[${new Date().toISOString()}] Refreshing auth token...`);
+        console.log(`[${new Date().toISOString()}] 🔄 Refreshing auth token...`);
         
         if (!browser || !page) {
             await initializeBrowser();
         }
         
         const newToken = await extractAuthToken();
+        console.log(`[${new Date().toISOString()}] ✅ Auth token refreshed successfully`);
         return newToken;
         
     } catch (error) {
-        console.error(`[${new Date().toISOString()}] Error refreshing auth token:`, error.message);
+        console.error(`[${new Date().toISOString()}] ❌ Error refreshing auth token:`, error.message);
         throw error;
     }
 }
 
-// Fetch jobs from Amazon API
+// Fetch jobs from Amazon API with comprehensive logging
 async function fetchAmazonJobs() {
     try {
+        console.log(`[${new Date().toISOString()}] 🔄 Starting job fetch cycle...`);
+        
         // Check if token needs refresh
         if (isTokenExpired()) {
-            console.log(`[${new Date().toISOString()}] Token expired, refreshing...`);
+            console.log(`[${new Date().toISOString()}] ⚠️  Token expired, refreshing...`);
             await refreshAuthToken();
         }
         
@@ -300,7 +363,10 @@ async function fetchAmazonJobs() {
             throw new Error('No auth token available');
         }
         
-        console.log(`[${new Date().toISOString()}] Fetching jobs from Amazon API...`);
+        // Calculate time until token expires
+        const timeUntilExpiry = tokenExpiryTime ? Math.floor((tokenExpiryTime.getTime() - Date.now()) / 60000) : 'Unknown';
+        console.log(`[${new Date().toISOString()}] 🔐 Using token (expires in ${timeUntilExpiry} minutes)`);
+        console.log(`[${new Date().toISOString()}] 📡 Querying GraphQL endpoint: ${AMAZON_GRAPHQL_URL}`);
         
         const headers = {
             'accept': '*/*',
@@ -319,39 +385,56 @@ async function fetchAmazonJobs() {
             'sec-gpc': '1'
         };
         
-        const response = await fetch(config.AMAZON_API_URL, {
+        console.log(`[${new Date().toISOString()}] 📤 Sending GraphQL query...`);
+        
+        const response = await fetch(AMAZON_GRAPHQL_URL, {
             method: 'POST',
             headers: headers,
             body: JSON.stringify(amazonQuery)
         });
 
+        console.log(`[${new Date().toISOString()}] 📥 Response received: ${response.status} ${response.statusText}`);
+
         if (!response.ok) {
             if (response.status === 401) {
-                console.log(`[${new Date().toISOString()}] Token expired, refreshing...`);
+                console.log(`[${new Date().toISOString()}] ❌ 401 Unauthorized - Token expired, refreshing...`);
                 await refreshAuthToken();
+                console.log(`[${new Date().toISOString()}] 🔄 Retrying with new token...`);
                 return await fetchAmazonJobs(); // Retry with new token
+            } else if (response.status === 403) {
+                console.log(`[${new Date().toISOString()}] ❌ 403 Forbidden - Token may be invalid or endpoint protected`);
             }
             throw new Error(`HTTP error! status: ${response.status}`);
         }
 
         const data = await response.json();
+        console.log(`[${new Date().toISOString()}] 📊 Response data received, parsing...`);
         
         if (data.errors) {
+            console.error(`[${new Date().toISOString()}] ❌ GraphQL errors:`, data.errors);
             throw new Error(`API Error: ${data.errors[0].message}`);
         }
 
         if (!data.data || !data.data.searchJobCardsByLocation) {
-            console.log('No data in response');
+            console.log(`[${new Date().toISOString()}] ⚠️  No job data in response structure`);
+            console.log(`[${new Date().toISOString()}] 📝 Response structure:`, Object.keys(data));
             return [];
         }
 
         const jobs = data.data.searchJobCardsByLocation.jobCards || [];
-        console.log(`[${new Date().toISOString()}] Found ${jobs.length} jobs`);
+        console.log(`[${new Date().toISOString()}] ✅ Successfully fetched ${jobs.length} jobs from Amazon API`);
+        
+        if (jobs.length > 0) {
+            console.log(`[${new Date().toISOString()}] 📋 Sample job titles:`);
+            jobs.slice(0, 3).forEach((job, index) => {
+                console.log(`[${new Date().toISOString()}]    ${index + 1}. ${job.jobTitle} in ${job.city || job.locationName}`);
+            });
+        }
         
         return jobs;
         
     } catch (error) {
-        console.error(`[${new Date().toISOString()}] Error fetching jobs:`, error.message);
+        console.error(`[${new Date().toISOString()}] ❌ Error fetching jobs:`, error.message);
         return [];
     }
 }
@@ -398,54 +481,67 @@ function formatJobForTelegram(job) {
     return formatted;
 }
 
-// Send Telegram alert
+// Send Telegram alert with rate limiting protection
 async function sendTelegramAlert(jobs) {
     try {
         if (!config.TELEGRAM_BOT_TOKEN || !config.TELEGRAM_CHANNEL_ID) {
-            console.error('Telegram configuration missing!');
+            console.error(`[${new Date().toISOString()}] ❌ Telegram configuration missing!`);
             return;
         }
 
-        let message = `NEW AMAZON WAREHOUSE JOBS!\n\n`;
-        
-        // Limit jobs per message
-        const jobsToSend = jobs.slice(0, config.MAX_JOBS_PER_ALERT);
-        
-        jobsToSend.forEach(job => {
+        console.log(`[${new Date().toISOString()}] 📱 Sending Telegram alerts for ${jobs.length} jobs...`);
+
+        // Send individual job alerts to avoid rate limiting
+        for (let i = 0; i < jobs.length && i < MAX_JOBS_PER_ALERT; i++) {
+            const job = jobs[i];
+            
+            let message = `🚨 NEW AMAZON WAREHOUSE JOB! 🚨\n\n`;
             message += formatJobForTelegram(job);
-            message += '\n';
-        });
-        
-        message += `Apply: https://hiring.amazon.ca/app#/jobSearch\n`;
-        message += `Alert time: ${new Date().toLocaleString()}`;
-        
-        const telegramResponse = await fetch(`https://api.telegram.org/bot${config.TELEGRAM_BOT_TOKEN}/sendMessage`, {
-            method: 'POST',
-            headers: {
-                'Content-Type': 'application/json'
-            },
-            body: JSON.stringify({
-                chat_id: config.TELEGRAM_CHANNEL_ID,
-                text: message,
-                parse_mode: 'HTML'
-            })
-        });
+            message += `\n🔗 Apply: https://hiring.amazon.com/app#/jobSearch\n`;
+            message += `📅 Alert time: ${new Date().toLocaleString()}`;
+            
+            const telegramResponse = await fetch(`https://api.telegram.org/bot${config.TELEGRAM_BOT_TOKEN}/sendMessage`, {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/json'
+                },
+                body: JSON.stringify({
+                    chat_id: config.TELEGRAM_CHANNEL_ID,
+                    text: message,
+                    parse_mode: 'HTML'
+                })
+            });
 
-        if (!telegramResponse.ok) {
-            throw new Error(`Telegram API error: ${telegramResponse.status}`);
-        }
+            if (telegramResponse.status === 429) {
+                console.log(`[${new Date().toISOString()}] ⚠️  Rate limited! Waiting 60 seconds...`);
+                await new Promise(resolve => setTimeout(resolve, 60000));
+                i--; // Retry this job
+                continue;
+            }
 
-        const result = await telegramResponse.json();
-        
-        if (result.ok) {
-            console.log(`[${new Date().toISOString()}] Telegram alert sent successfully!`);
-            console.log(`[${new Date().toISOString()}] Alerted about ${jobsToSend.length} new jobs`);
-        } else {
-            console.error(`[${new Date().toISOString()}] Telegram API error:`, result.description);
+            if (!telegramResponse.ok) {
+                console.error(`[${new Date().toISOString()}] ❌ Telegram API error: ${telegramResponse.status}`);
+                continue;
+            }
+
+            const result = await telegramResponse.json();
+            
+            if (result.ok) {
+                console.log(`[${new Date().toISOString()}] ✅ Job alert ${i + 1} sent successfully!`);
+            } else {
+                console.error(`[${new Date().toISOString()}] ❌ Telegram API error:`, result.description);
+            }
+            
+            // Wait 2 seconds between messages to avoid rate limiting
+            if (i < jobs.length - 1 && i < MAX_JOBS_PER_ALERT - 1) {
+                await new Promise(resolve => setTimeout(resolve, 2000));
+            }
         }
+        
+        console.log(`[${new Date().toISOString()}] 📱 Completed sending alerts for ${Math.min(jobs.length, MAX_JOBS_PER_ALERT)} jobs`);
         
     } catch (error) {
-        console.error(`[${new Date().toISOString()}] Error sending Telegram alert:`, error.message);
+        console.error(`[${new Date().toISOString()}] ❌ Error sending Telegram alert:`, error.message);
     }
 }
 
@@ -455,6 +551,7 @@ async function pollForJobs() {
         const jobs = await fetchAmazonJobs();
         
         if (jobs.length === 0) {
+            console.log(`[${new Date().toISOString()}] 📭 No jobs found in this cycle`);
             return;
         }
         
@@ -462,7 +559,7 @@ async function pollForJobs() {
         const newJobs = jobs.filter(job => !seenJobIds.has(job.jobId));
         
         if (newJobs.length > 0) {
-            console.log(`[${new Date().toISOString()}] Found ${newJobs.length} new jobs!`);
+            console.log(`[${new Date().toISOString()}] 🎉 Found ${newJobs.length} new jobs!`);
             
             // Add new job IDs to seen set
             newJobs.forEach(job => seenJobIds.add(job.jobId));
@@ -474,11 +571,14 @@ async function pollForJobs() {
             if (seenJobIds.size > 1000) {
                 const jobIdsArray = Array.from(seenJobIds);
                 seenJobIds = new Set(jobIdsArray.slice(-500));
+                console.log(`[${new Date().toISOString()}] 🧹 Cleaned up old job IDs, keeping last 500`);
             }
+        } else {
+            console.log(`[${new Date().toISOString()}] 🔄 No new jobs found (${jobs.length} total jobs checked)`);
         }
         
     } catch (error) {
-        console.error(`[${new Date().toISOString()}] Error in polling:`, error.message);
+        console.error(`[${new Date().toISOString()}] ❌ Error in polling:`, error.message);
     }
 }
 
@@ -486,56 +586,109 @@ async function pollForJobs() {
 function logHealthStatus() {
     const uptime = process.uptime();
     const memoryUsage = process.memoryUsage();
+    const timeUntilExpiry = tokenExpiryTime ? Math.floor((tokenExpiryTime.getTime() - Date.now()) / 60000) : 'Unknown';
     
-    console.log(`[${new Date().toISOString()}] Health Check:`);
-    console.log(`  Uptime: ${Math.floor(uptime / 3600)}h ${Math.floor((uptime % 3600) / 60)}m`);
-    console.log(`  Memory: ${Math.round(memoryUsage.heapUsed / 1024 / 1024)}MB`);
-    console.log(`  Seen Jobs: ${seenJobIds.size}`);
-    console.log(`  Last Poll: ${lastPollTime.toISOString()}`);
-    console.log(`  Auth Token: ${currentAuthToken ? 'Valid' : 'Missing'}`);
-    console.log(`  Token Expires: ${tokenExpiryTime ? tokenExpiryTime.toISOString() : 'N/A'}`);
+    console.log(`[${new Date().toISOString()}] 💊 Health Check:`);
+    console.log(`  🕐 Uptime: ${Math.floor(uptime / 3600)}h ${Math.floor((uptime % 3600) / 60)}m`);
+    console.log(`  💾 Memory: ${Math.round(memoryUsage.heapUsed / 1024 / 1024)}MB`);
+    console.log(`  📊 Seen Jobs: ${seenJobIds.size}`);
+    console.log(`  🕒 Last Poll: ${lastPollTime.toISOString()}`);
+    console.log(`  🔐 Auth Token: ${currentAuthToken ? 'Valid' : 'Missing'}`);
+    console.log(`  ⏰ Token Expires: ${tokenExpiryTime ? tokenExpiryTime.toISOString() : 'N/A'}`);
+    console.log(`  ⏱️  Time Until Expiry: ${timeUntilExpiry} minutes`);
+    console.log(`  🌐 Method: Automated Token Extraction`);
 }
 
 // Cleanup function
 async function cleanup() {
     try {
+        console.log(`[${new Date().toISOString()}] 🧹 Starting cleanup process...`);
+        
+        // Clear token refresh timer
+        if (tokenRefreshInterval) {
+            clearInterval(tokenRefreshInterval);
+            console.log(`[${new Date().toISOString()}] ✅ Token refresh timer cleared`);
+        }
+        
+        // Close browser
         if (browser) {
             await browser.close();
-            console.log(`[${new Date().toISOString()}] Browser closed`);
+            console.log(`[${new Date().toISOString()}] ✅ Browser closed`);
         }
+        
+        console.log(`[${new Date().toISOString()}] 🧹 Cleanup completed`);
     } catch (error) {
-        console.error(`[${new Date().toISOString()}] Error during cleanup:`, error.message);
+        console.error(`[${new Date().toISOString()}] ❌ Error during cleanup:`, error.message);
     }
 }
 
-// Start monitoring
+// Automatic token refresh system
+function startTokenRefreshTimer() {
+    // Clear existing timer if any
+    if (tokenRefreshInterval) {
+        clearInterval(tokenRefreshInterval);
+    }
+    
+    console.log(`[${new Date().toISOString()}] 🔄 Setting up automatic token refresh (every 55 minutes)`);
+    
+    tokenRefreshInterval = setInterval(async () => {
+        try {
+            console.log(`[${new Date().toISOString()}] ⏰ 55-minute timer triggered - refreshing token...`);
+            await refreshAuthToken();
+            console.log(`[${new Date().toISOString()}] ✅ Automatic token refresh completed successfully`);
+        } catch (error) {
+            console.error(`[${new Date().toISOString()}] ❌ Automatic token refresh failed:`, error.message);
+            console.log(`[${new Date().toISOString()}] 🔄 Will retry on next poll cycle...`);
+        }
+    }, TOKEN_REFRESH_INTERVAL);
+}
+
+// Start monitoring with comprehensive logging
 async function startMonitoring() {
     try {
-        console.log(`[${new Date().toISOString()}] Starting Amazon Job Monitor with Auto Token Extraction...`);
-        console.log(`[${new Date().toISOString()}] Polling interval: ${config.POLLING_INTERVAL}ms`);
-        console.log(`[${new Date().toISOString()}] Telegram channel: ${config.TELEGRAM_CHANNEL_ID}`);
+        console.log(`[${new Date().toISOString()}] 🚀 Starting Amazon Job Monitor with Automated Token Extraction`);
+        console.log(`[${new Date().toISOString()}] ================================================`);
+        console.log(`[${new Date().toISOString()}] 🌐 Amazon Website: ${AMAZON_WEBSITE_URL}`);
+        console.log(`[${new Date().toISOString()}] 📡 GraphQL Endpoint: ${AMAZON_GRAPHQL_URL}`);
+        console.log(`[${new Date().toISOString()}] ⏱️  Polling Interval: ${POLLING_INTERVAL}ms (${POLLING_INTERVAL/1000} seconds)`);
+        console.log(`[${new Date().toISOString()}] 📱 Telegram Channel: ${config.TELEGRAM_CHANNEL_ID}`);
+        console.log(`[${new Date().toISOString()}] 🔄 Token Refresh: Every 55 minutes`);
+        console.log(`[${new Date().toISOString()}] ================================================\n`);
         
-        // Initialize browser and get first token
+        // Step 1: Initialize browser
+        console.log(`[${new Date().toISOString()}] 📋 Step 1: Initializing browser for token extraction...`);
         await initializeBrowser();
+        
+        // Step 2: Extract initial token
+        console.log(`[${new Date().toISOString()}] 📋 Step 2: Extracting initial authentication token...`);
         await refreshAuthToken();
         
-        // Initial poll
+        // Step 3: Start automatic token refresh timer
+        console.log(`[${new Date().toISOString()}] 📋 Step 3: Setting up automatic token refresh...`);
+        startTokenRefreshTimer();
+        
+        // Step 4: Initial job poll
+        console.log(`[${new Date().toISOString()}] 📋 Step 4: Performing initial job search...`);
         await pollForJobs();
         
-        // Set up polling interval
+        // Step 5: Set up polling interval
+        console.log(`[${new Date().toISOString()}] 📋 Step 5: Starting continuous job monitoring...`);
         setInterval(async () => {
             lastPollTime = new Date();
             await pollForJobs();
-        }, config.POLLING_INTERVAL);
+        }, POLLING_INTERVAL);
         
-        // Health check every 5 minutes
+        // Step 6: Health check every 5 minutes
+        console.log(`[${new Date().toISOString()}] 📋 Step 6: Setting up health monitoring...`);
         setInterval(logHealthStatus, 5 * 60 * 1000);
         
-        // Log startup
+        // Initial health status
+        console.log(`[${new Date().toISOString()}] \n🎉 Amazon Job Monitor is now running! 🎉`);
+        console.log(`[${new Date().toISOString()}] ✅ All systems operational and monitoring for jobs...`);
         logHealthStatus();
         
     } catch (error) {
-        console.error(`[${new Date().toISOString()}] Error starting monitoring:`, error.message);
+        console.error(`[${new Date().toISOString()}] ❌ Critical error starting monitoring:`, error.message);
         await cleanup();
         process.exit(1);
     }
@@ -543,28 +696,40 @@ async function startMonitoring() {
 
 // Error handling
 process.on('uncaughtException', async (error) => {
-    console.error(`[${new Date().toISOString()}] Uncaught Exception:`, error);
+    console.error(`[${new Date().toISOString()}] ❌ Uncaught Exception:`, error);
     await cleanup();
     process.exit(1);
 });
 
 process.on('unhandledRejection', async (reason, promise) => {
-    console.error(`[${new Date().toISOString()}] Unhandled Rejection at:`, promise, 'reason:', reason);
+    console.error(`[${new Date().toISOString()}] ❌ Unhandled Rejection at:`, promise, 'reason:', reason);
     await cleanup();
     process.exit(1);
 });
 
 // Graceful shutdown
 process.on('SIGINT', async () => {
-    console.log(`[${new Date().toISOString()}] Shutting down gracefully...`);
+    console.log(`[${new Date().toISOString()}] 🛑 Shutting down gracefully...`);
     await cleanup();
     process.exit(0);
 });
 
 // Start the monitor
 async function main() {
-    config = await setupConfiguration();
-    await startMonitoring();
+    try {
+        console.log(`[${new Date().toISOString()}] 🎬 Initializing Amazon Job Monitor...`);
+        
+        // Get Telegram credentials (only thing we need from user)
+        config = await setupTelegramCredentials();
+        
+        // Start the monitoring system
+        await startMonitoring();
+        
+    } catch (error) {
+        console.error(`[${new Date().toISOString()}] ❌ Fatal error in main:`, error.message);
+        process.exit(1);
+    }
 }
 
+// Start the application
 main();

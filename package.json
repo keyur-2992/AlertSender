@@ -5,8 +5,7 @@
   "main": "auto-token-monitor.js",
   "scripts": {
     "start": "node auto-token-monitor.js",
-    "dev": "nodemon auto-token-monitor.js",
-    "setup": "node setup.js"
+    "dev": "nodemon auto-token-monitor.js"
   },
   "dependencies": {
     "node-fetch": "^2.6.7",
