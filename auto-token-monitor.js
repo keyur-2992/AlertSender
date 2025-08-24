@@ -189,7 +189,7 @@ async function extractAuthToken() {
         });
         
         console.log(`[${new Date().toISOString()}] ⏱️  Waiting for page to fully load...`);
-        await new Promise(resolve => setTimeout(resolve, 10000)); // 10 seconds wait
+        await new Promise(resolve => setTimeout(resolve, 15000)); // 15 seconds wait for better token generation
         
         console.log(`[${new Date().toISOString()}] 🔍 Scanning for JWT tokens...`);
         
@@ -304,6 +304,13 @@ async function extractAuthToken() {
             const minutesLeft = Math.floor(timeLeft / 60000);
             const secondsLeft = Math.floor((timeLeft % 60000) / 1000);
             
+            // Check if token is already expired or expires very soon (less than 5 minutes)
+            if (timeLeft < 5 * 60 * 1000) {
+                console.log(`[${new Date().toISOString()}] ⚠️  Extracted token expires too soon (${minutesLeft}m ${secondsLeft}s). Waiting for fresh token...`);
+                await new Promise(resolve => setTimeout(resolve, 30000)); // Wait 30 seconds
+                throw new Error('Token expires too soon, need to wait for fresh token generation');
+            }
+            
             // Print in the exact format you requested
             console.log(`\n🔑 Token Extraction Results:`);
             console.log(`   Source: ${extractedData.source}`);
@@ -373,8 +380,15 @@ function isTokenExpired() {
         return true;
     }
     
-    // Refresh token 5 minutes before expiry
-    return new Date() > new Date(tokenExpiryTime.getTime() - 5 * 60 * 1000);
+    // Refresh token 10 minutes before expiry (was 5 minutes)
+    const tenMinutesBeforeExpiry = new Date(tokenExpiryTime.getTime() - 10 * 60 * 1000);
+    const isExpired = new Date() > tenMinutesBeforeExpiry;
+    
+    if (isExpired) {
+        console.log(`[${new Date().toISOString()}] 🕐 Token will expire soon. Current time: ${new Date().toISOString()}, Expiry: ${tokenExpiryTime.toISOString()}`);
+    }
+    
+    return isExpired;
 }
 
 // Refresh auth token
@@ -493,42 +507,35 @@ async function fetchAmazonJobs() {
 
 // Format job for Telegram message
 function formatJobForTelegram(job) {
-    let formatted = `${job.locationName}\n`;
-    formatted += `${job.jobTitle}\n`;
+    // Get current time in a readable format
+    const now = new Date();
+    const timeString = now.toLocaleString('en-CA', {
+        timeZone: 'America/Toronto', // Eastern Time (Canada)
+        year: 'numeric',
+        month: '2-digit',
+        day: '2-digit',
+        hour: '2-digit',
+        minute: '2-digit',
+        second: '2-digit',
+        hour12: false
+    });
+    
+    let formatted = `-------------------------------------------\n`;
+    formatted += `Shifts: ${job.scheduleCount || 1}\n`;
+    formatted += `Location: ${job.locationName || job.city}\n`;
+    formatted += `Type: ${job.jobTypeL10N || job.employmentTypeL10N || 'Flex Time'}\n`;
+    formatted += `Job: ${job.jobTitle}\n`;
     
     if (job.totalPayRateMinL10N && job.totalPayRateMaxL10N) {
         formatted += `Pay: ${job.totalPayRateMinL10N} - ${job.totalPayRateMaxL10N}\n`;
+    } else if (job.totalPayRateMinL10N) {
+        formatted += `Pay: ${job.totalPayRateMinL10N} CAD\n`;
+    } else {
+        formatted += `Pay: See posting\n`;
     }
     
-    if (job.bonusPay && job.bonusPay > 0) {
-        formatted += `Bonus: ${job.bonusPayL10N}\n`;
-    }
-    
-    if (job.jobTypeL10N) {
-        formatted += `Type: ${job.jobTypeL10N}\n`;
-    }
-    
-    if (job.employmentTypeL10N) {
-        formatted += `Employment: ${job.employmentTypeL10N}\n`;
-    }
-    
-    if (job.scheduleCount) {
-        formatted += `Schedules: ${job.scheduleCount} available\n`;
-    }
-    
-    if (job.tagLine) {
-        formatted += `${job.tagLine}\n`;
-    }
-    
-    if (job.bannerText) {
-        formatted += `${job.bannerText}\n`;
-    }
-    
-    formatted += `Job ID: ${job.jobId}\n`;
-    
-    if (job.distance) {
-        formatted += `Distance: ${job.distance}km\n`;
-    }
+    formatted += `Time: ${timeString}\n`;
+    formatted += `-------------------------------------------`;
     
     return formatted;
 }
@@ -547,10 +554,8 @@ async function sendTelegramAlert(jobs) {
         for (let i = 0; i < jobs.length && i < MAX_JOBS_PER_ALERT; i++) {
             const job = jobs[i];
             
-            let message = `🚨 NEW AMAZON WAREHOUSE JOB! 🚨\n\n`;
-            message += formatJobForTelegram(job);
-            message += `\n🔗 Apply: https://hiring.amazon.ca/app#/jobSearch\n`;
-            message += `📅 Alert time: ${new Date().toLocaleString()}`;
+            // Simple message with just the formatted job info
+            const message = formatJobForTelegram(job);
             
             const telegramResponse = await fetch(`https://api.telegram.org/bot${config.TELEGRAM_BOT_TOKEN}/sendMessage`, {
                 method: 'POST',
