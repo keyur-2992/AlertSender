@@ -11,6 +11,26 @@ const TOKEN_REFRESH_INTERVAL = 55 * 60 * 1000; // 55 minutes (refresh before 59-
 
 // Simple setup function - only Telegram credentials
 async function setupTelegramCredentials() {
+    console.log('🤖 Amazon Job Monitor - Automated Token Extraction');
+    console.log('================================================\n');
+    
+    // Check for environment variables first (for PM2/background compatibility)
+    if (process.env.TELEGRAM_BOT_TOKEN && process.env.TELEGRAM_CHANNEL_ID) {
+        console.log('📱 Using Telegram credentials from environment variables');
+        console.log('✅ Telegram credentials loaded from environment!');
+        console.log(`🌐 Using hardcoded endpoints:`);
+        console.log(`   Website: ${AMAZON_WEBSITE_URL}`);
+        console.log(`   GraphQL: ${AMAZON_GRAPHQL_URL}`);
+        console.log(`   Polling: ${POLLING_INTERVAL}ms`);
+        console.log(`   Token Refresh: Every 55 minutes\n`);
+        
+        return {
+            TELEGRAM_BOT_TOKEN: process.env.TELEGRAM_BOT_TOKEN.trim(),
+            TELEGRAM_CHANNEL_ID: process.env.TELEGRAM_CHANNEL_ID.trim()
+        };
+    }
+    
+    // Fall back to interactive input if no environment variables
     const rl = readline.createInterface({
         input: process.stdin,
         output: process.stdout
@@ -22,8 +42,6 @@ async function setupTelegramCredentials() {
         });
     };
 
-    console.log('🤖 Amazon Job Monitor - Automated Token Extraction');
-    console.log('================================================\n');
     console.log('📱 Please provide your Telegram credentials:\n');
 
     // Get Telegram Bot Token
@@ -177,9 +195,10 @@ function decodeJWT(token) {
 }
 
 // Extract auth token from Amazon hiring page using proven method
-async function extractAuthToken() {
+async function extractAuthToken(retryCount = 0) {
+    const maxRetries = 3;
     try {
-        console.log(`[${new Date().toISOString()}] 🚀 Starting token extraction process...`);
+        console.log(`[${new Date().toISOString()}] 🚀 Starting token extraction process... (Attempt ${retryCount + 1}/${maxRetries + 1})`);
         
         // Navigate to Amazon hiring page
         console.log(`[${new Date().toISOString()}] 📡 Navigating to Amazon website...`);
@@ -305,10 +324,26 @@ async function extractAuthToken() {
             const secondsLeft = Math.floor((timeLeft % 60000) / 1000);
             
             // Check if token is already expired or expires very soon (less than 5 minutes)
-            if (timeLeft < 5 * 60 * 1000) {
-                console.log(`[${new Date().toISOString()}] ⚠️  Extracted token expires too soon (${minutesLeft}m ${secondsLeft}s). Waiting for fresh token...`);
-                await new Promise(resolve => setTimeout(resolve, 30000)); // Wait 30 seconds
-                throw new Error('Token expires too soon, need to wait for fresh token generation');
+            if (timeLeft <= 0) {
+                console.log(`[${new Date().toISOString()}] ⚠️  Token is already expired (${minutesLeft}m ${secondsLeft}s ago).`);
+                if (retryCount < maxRetries) {
+                    console.log(`[${new Date().toISOString()}] 🔄 Waiting 30 seconds for fresh token generation...`);
+                    await new Promise(resolve => setTimeout(resolve, 30000)); // Wait 30 seconds
+                    console.log(`[${new Date().toISOString()}] 🔄 Retrying token extraction with fresh page visit...`);
+                    return await extractAuthToken(retryCount + 1); // Recursive retry with fresh page visit
+                } else {
+                    throw new Error(`Unable to get a valid token after ${maxRetries + 1} attempts`);
+                }
+            } else if (timeLeft < 5 * 60 * 1000) {
+                console.log(`[${new Date().toISOString()}] ⚠️  Token expires too soon (${minutesLeft}m ${secondsLeft}s).`);
+                if (retryCount < maxRetries) {
+                    console.log(`[${new Date().toISOString()}] 🔄 Waiting 30 seconds for fresh token generation...`);
+                    await new Promise(resolve => setTimeout(resolve, 30000)); // Wait 30 seconds
+                    console.log(`[${new Date().toISOString()}] 🔄 Retrying token extraction with fresh page visit...`);
+                    return await extractAuthToken(retryCount + 1); // Recursive retry with fresh page visit
+                } else {
+                    console.log(`[${new Date().toISOString()}] ⚠️  Using short-lived token as fallback after ${maxRetries + 1} attempts`);
+                }
             }
             
             // Print in the exact format you requested
