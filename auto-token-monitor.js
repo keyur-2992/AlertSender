@@ -3,7 +3,7 @@ const puppeteer = require('puppeteer');
 const readline = require('readline');
 
 // Hardcoded endpoints - no more configuration needed
-const AMAZON_WEBSITE_URL = 'https://hiring.amazon.com/app#/jobSearch';
+const AMAZON_WEBSITE_URL = 'https://hiring.amazon.ca/app#/jobSearch';
 const AMAZON_GRAPHQL_URL = 'https://e5mquma77feepi2bdn4d6h3mpu.appsync-api.us-east-1.amazonaws.com/graphql';
 const POLLING_INTERVAL = 1000; // 1 second
 const MAX_JOBS_PER_ALERT = 999;
@@ -72,8 +72,8 @@ const amazonQuery = {
     "operationName": "searchJobCardsByLocation",
     "variables": {
         "searchJobRequest": {
-            "locale": "en-US",
-            "country": "United States",
+            "locale": "en-CA",
+            "country": "Canada",
             "keyWords": "",
             "equalFilters": [],
             "containFilters": [
@@ -418,13 +418,13 @@ async function fetchAmazonJobs() {
         
         const headers = {
             'accept': '*/*',
-            'accept-language': 'en-US,en;q=0.9',
+            'accept-language': 'en-CA,en;q=0.9',
             'authorization': `Bearer ${currentAuthToken}`,
             'content-type': 'application/json',
-            'country': 'US',
+            'country': 'Canada',
             'iscanary': 'false',
-            'origin': 'https://hiring.amazon.com',
-            'referer': 'https://hiring.amazon.com/',
+            'origin': 'https://hiring.amazon.ca',
+            'referer': 'https://hiring.amazon.ca/',
             'user-agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
             'x-amz-user-agent': 'aws-amplify/5.0.0'
         };
@@ -549,7 +549,7 @@ async function sendTelegramAlert(jobs) {
             
             let message = `🚨 NEW AMAZON WAREHOUSE JOB! 🚨\n\n`;
             message += formatJobForTelegram(job);
-            message += `\n🔗 Apply: https://hiring.amazon.com/app#/jobSearch\n`;
+            message += `\n🔗 Apply: https://hiring.amazon.ca/app#/jobSearch\n`;
             message += `📅 Alert time: ${new Date().toLocaleString()}`;
             
             const telegramResponse = await fetch(`https://api.telegram.org/bot${config.TELEGRAM_BOT_TOKEN}/sendMessage`, {
@@ -565,8 +565,8 @@ async function sendTelegramAlert(jobs) {
             });
 
             if (telegramResponse.status === 429) {
-                console.log(`[${new Date().toISOString()}] ⚠️  Rate limited! Waiting 60 seconds...`);
-                await new Promise(resolve => setTimeout(resolve, 60000));
+                console.log(`[${new Date().toISOString()}] ⚠️  Rate limited! Waiting 10 seconds...`);
+                await new Promise(resolve => setTimeout(resolve, 10000));
                 i--; // Retry this job
                 continue;
             }
@@ -636,12 +636,13 @@ function logHealthStatus() {
     console.log(`[${new Date().toISOString()}] 💊 Health Check:`);
     console.log(`  🕐 Uptime: ${Math.floor(uptime / 3600)}h ${Math.floor((uptime % 3600) / 60)}m`);
     console.log(`  💾 Memory: ${Math.round(memoryUsage.heapUsed / 1024 / 1024)}MB`);
-    console.log(`  📊 Seen Jobs: ${seenJobIds.size} (clears every minute)`);
+    console.log(`  📊 Seen Jobs: ${seenJobIds.size} (clears every 30 seconds)`);
     console.log(`  🕒 Last Poll: ${lastPollTime.toISOString()}`);
     console.log(`  🔐 Auth Token: ${currentAuthToken ? 'Valid' : 'Missing'}`);
     console.log(`  ⏰ Token Expires: ${tokenExpiryTime ? tokenExpiryTime.toISOString() : 'N/A'}`);
     console.log(`  ⏱️  Time Until Expiry: ${timeUntilExpiry} minutes`);
     console.log(`  📤 Max Alerts: ${MAX_JOBS_PER_ALERT} (unlimited)`);
+    console.log(`  🔄 Alert Mode: New jobs only (30s cleanup)`);
     console.log(`  🌐 Method: Automated Token Extraction`);
 }
 
@@ -728,13 +729,13 @@ async function startMonitoring() {
         console.log(`[${new Date().toISOString()}] 📋 Step 6: Setting up health monitoring...`);
         setInterval(logHealthStatus, 5 * 60 * 1000);
         
-        // Step 7: Clear seen jobs every minute to allow refilled positions
-        console.log(`[${new Date().toISOString()}] 📋 Step 7: Setting up periodic seen jobs cleanup (every minute)...`);
+        // Step 7: Clear seen jobs every 30 seconds to allow refilled positions
+        console.log(`[${new Date().toISOString()}] 📋 Step 7: Setting up periodic seen jobs cleanup (every 30 seconds)...`);
         setInterval(() => {
             const previousCount = seenJobIds.size;
             seenJobIds.clear();
             console.log(`[${new Date().toISOString()}] 🧹 Cleared ${previousCount} seen job IDs - ready to detect refilled positions`);
-        }, 60 * 1000); // Clear every minute
+        }, 30 * 1000); // Clear every 30 seconds
         
         // Initial health status
         console.log(`[${new Date().toISOString()}] \n🎉 Amazon Job Monitor is now running! 🎉`);
