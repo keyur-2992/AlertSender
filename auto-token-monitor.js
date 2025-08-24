@@ -6,7 +6,7 @@ const readline = require('readline');
 const AMAZON_WEBSITE_URL = 'https://hiring.amazon.com/app#/jobSearch';
 const AMAZON_GRAPHQL_URL = 'https://e5mquma77feepi2bdn4d6h3mpu.appsync-api.us-east-1.amazonaws.com/graphql';
 const POLLING_INTERVAL = 1000; // 1 second
-const MAX_JOBS_PER_ALERT = 5;
+const MAX_JOBS_PER_ALERT = 999;
 const TOKEN_REFRESH_INTERVAL = 55 * 60 * 1000; // 55 minutes (refresh before 59-minute expiry)
 
 // Simple setup function - only Telegram credentials
@@ -618,13 +618,6 @@ async function pollForJobs() {
             
             // Send Telegram alert
             await sendTelegramAlert(newJobs);
-            
-            // Clean up old job IDs (keep last 1000)
-            if (seenJobIds.size > 1000) {
-                const jobIdsArray = Array.from(seenJobIds);
-                seenJobIds = new Set(jobIdsArray.slice(-500));
-                console.log(`[${new Date().toISOString()}] 🧹 Cleaned up old job IDs, keeping last 500`);
-            }
         } else {
             console.log(`[${new Date().toISOString()}] 🔄 No new jobs found (${jobs.length} total jobs checked)`);
         }
@@ -643,11 +636,12 @@ function logHealthStatus() {
     console.log(`[${new Date().toISOString()}] 💊 Health Check:`);
     console.log(`  🕐 Uptime: ${Math.floor(uptime / 3600)}h ${Math.floor((uptime % 3600) / 60)}m`);
     console.log(`  💾 Memory: ${Math.round(memoryUsage.heapUsed / 1024 / 1024)}MB`);
-    console.log(`  📊 Seen Jobs: ${seenJobIds.size}`);
+    console.log(`  📊 Seen Jobs: ${seenJobIds.size} (clears every minute)`);
     console.log(`  🕒 Last Poll: ${lastPollTime.toISOString()}`);
     console.log(`  🔐 Auth Token: ${currentAuthToken ? 'Valid' : 'Missing'}`);
     console.log(`  ⏰ Token Expires: ${tokenExpiryTime ? tokenExpiryTime.toISOString() : 'N/A'}`);
     console.log(`  ⏱️  Time Until Expiry: ${timeUntilExpiry} minutes`);
+    console.log(`  📤 Max Alerts: ${MAX_JOBS_PER_ALERT} (unlimited)`);
     console.log(`  🌐 Method: Automated Token Extraction`);
 }
 
@@ -733,6 +727,14 @@ async function startMonitoring() {
         // Step 6: Health check every 5 minutes
         console.log(`[${new Date().toISOString()}] 📋 Step 6: Setting up health monitoring...`);
         setInterval(logHealthStatus, 5 * 60 * 1000);
+        
+        // Step 7: Clear seen jobs every minute to allow refilled positions
+        console.log(`[${new Date().toISOString()}] 📋 Step 7: Setting up periodic seen jobs cleanup (every minute)...`);
+        setInterval(() => {
+            const previousCount = seenJobIds.size;
+            seenJobIds.clear();
+            console.log(`[${new Date().toISOString()}] 🧹 Cleared ${previousCount} seen job IDs - ready to detect refilled positions`);
+        }, 60 * 1000); // Clear every minute
         
         // Initial health status
         console.log(`[${new Date().toISOString()}] \n🎉 Amazon Job Monitor is now running! 🎉`);
