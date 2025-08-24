@@ -72,8 +72,8 @@ const amazonQuery = {
     "operationName": "searchJobCardsByLocation",
     "variables": {
         "searchJobRequest": {
-            "locale": "en-CA",
-            "country": "Canada",
+            "locale": "en-US",
+            "country": "United States",
             "keyWords": "",
             "equalFilters": [],
             "containFilters": [
@@ -94,7 +94,7 @@ const amazonQuery = {
                 "range": { "startDate": new Date().toISOString().split('T')[0] }
             }],
             "sorters": [],
-            "pageSize": 100,
+            "pageSize": 50,
             "consolidateSchedule": true
         }
     },
@@ -193,14 +193,17 @@ async function extractAuthToken() {
         
         console.log(`[${new Date().toISOString()}] 🔍 Scanning for JWT tokens...`);
         
-        // Extract the JWT token from localStorage using our proven method
-        const extractedToken = await page.evaluate(() => {
+        // Extract the JWT token and API key from localStorage using our proven method
+        const extractedData = await page.evaluate(() => {
             try {
+                let tokenData = null;
+                let apiKey = null;
+                
                 // Method 1: Check localStorage for sessionToken (our target)
                 const sessionToken = localStorage.getItem('sessionToken');
                 if (sessionToken && sessionToken.startsWith('eyJ')) {
                     console.log('✅ Found JWT sessionToken in localStorage');
-                    return {
+                    tokenData = {
                         token: sessionToken,
                         source: 'localStorage[sessionToken]',
                         type: 'JWT'
@@ -208,37 +211,72 @@ async function extractAuthToken() {
                 }
                 
                 // Method 2: Check all localStorage items for JWT tokens
-                for (let i = 0; i < localStorage.length; i++) {
-                    const key = localStorage.key(i);
-                    const value = localStorage.getItem(key);
-                    
-                    if (value && value.startsWith('eyJ') && value.length > 100) {
-                        console.log(`✅ Found JWT token in localStorage[${key}]`);
-                        return {
-                            token: value,
-                            source: `localStorage[${key}]`,
-                            type: 'JWT'
-                        };
+                if (!tokenData) {
+                    for (let i = 0; i < localStorage.length; i++) {
+                        const key = localStorage.key(i);
+                        const value = localStorage.getItem(key);
+                        
+                        if (value && value.startsWith('eyJ') && value.length > 100) {
+                            console.log(`✅ Found JWT token in localStorage[${key}]`);
+                            tokenData = {
+                                token: value,
+                                source: `localStorage[${key}]`,
+                                type: 'JWT'
+                            };
+                            break;
+                        }
                     }
                 }
                 
                 // Method 3: Check sessionStorage
-                for (let i = 0; i < sessionStorage.length; i++) {
-                    const key = sessionStorage.key(i);
-                    const value = sessionStorage.getItem(key);
-                    
-                    if (value && value.startsWith('eyJ') && value.length > 100) {
-                        console.log(`✅ Found JWT token in sessionStorage[${key}]`);
-                        return {
-                            token: value,
-                            source: `sessionStorage[${key}]`,
-                            type: 'JWT'
-                        };
+                if (!tokenData) {
+                    for (let i = 0; i < sessionStorage.length; i++) {
+                        const key = sessionStorage.key(i);
+                        const value = sessionStorage.getItem(key);
+                        
+                        if (value && value.startsWith('eyJ') && value.length > 100) {
+                            console.log(`✅ Found JWT token in sessionStorage[${key}]`);
+                            tokenData = {
+                                token: value,
+                                source: `sessionStorage[${key}]`,
+                                type: 'JWT'
+                            };
+                            break;
+                        }
                     }
                 }
                 
-                console.log('❌ No JWT tokens found in storage');
-                return null;
+                // Extract API key from window.__AMPLIFY_CONFIG__ or scripts
+                try {
+                    if (window.__AMPLIFY_CONFIG__ && window.__AMPLIFY_CONFIG__.aws_appsync_apiKey) {
+                        apiKey = window.__AMPLIFY_CONFIG__.aws_appsync_apiKey;
+                        console.log('✅ Found API key in __AMPLIFY_CONFIG__');
+                    } else {
+                        // Look for API key in script tags
+                        const scripts = document.querySelectorAll('script');
+                        for (const script of scripts) {
+                            const content = script.textContent || script.innerHTML;
+                            const apiKeyMatch = content.match(/["']da2-[a-zA-Z0-9]{26}["']/);
+                            if (apiKeyMatch) {
+                                apiKey = apiKeyMatch[0].replace(/["']/g, '');
+                                console.log('✅ Found API key in script content');
+                                break;
+                            }
+                        }
+                    }
+                } catch (e) {
+                    console.log('⚠️  Could not extract API key');
+                }
+                
+                if (!tokenData) {
+                    console.log('❌ No JWT tokens found in storage');
+                    return null;
+                }
+                
+                return {
+                    ...tokenData,
+                    apiKey: apiKey
+                };
                 
             } catch (error) {
                 console.error('❌ Error during token extraction:', error.message);
@@ -246,14 +284,20 @@ async function extractAuthToken() {
             }
         });
         
-        if (!extractedToken || !extractedToken.token) {
+        if (!extractedData || !extractedData.token) {
             throw new Error('No JWT token found in localStorage or sessionStorage');
         }
         
         console.log(`[${new Date().toISOString()}] ✅ Token extracted successfully!`);
         
+        // Store the API key globally for use in requests
+        if (extractedData.apiKey) {
+            console.log(`[${new Date().toISOString()}] ✅ API key extracted: ${extractedData.apiKey.substring(0, 20)}...`);
+            global.amazonApiKey = extractedData.apiKey;
+        }
+        
         // Decode JWT to get expiration
-        const decoded = decodeJWT(extractedToken.token);
+        const decoded = decodeJWT(extractedData.token);
         if (decoded && decoded.exp) {
             const expiryDate = new Date(decoded.exp * 1000);
             const timeLeft = expiryDate.getTime() - Date.now();
@@ -262,26 +306,30 @@ async function extractAuthToken() {
             
             // Print in the exact format you requested
             console.log(`\n🔑 Token Extraction Results:`);
-            console.log(`   Source: ${extractedToken.source}`);
+            console.log(`   Source: ${extractedData.source}`);
             console.log(`   URL: localStorage`);
-            console.log(`   Token: ${extractedToken.token.substring(0, 50)}...`);
+            console.log(`   Token: ${extractedData.token.substring(0, 50)}...`);
             console.log(`   Type: JWT Token`);
             console.log(`   Issued: ${new Date(decoded.iat * 1000).toISOString()}`);
-            console.log(`   Expires: ✅ Expires in ${minutesLeft}m ${secondsLeft}s (${expiryDate.toISOString()})\n`);
+            console.log(`   Expires: ✅ Expires in ${minutesLeft}m ${secondsLeft}s (${expiryDate.toISOString()})`);
+            if (extractedData.apiKey) {
+                console.log(`   API Key: ${extractedData.apiKey.substring(0, 20)}...`);
+            }
+            console.log('');
             
-            currentAuthToken = extractedToken.token;
+            currentAuthToken = extractedData.token;
             tokenExpiryTime = expiryDate;
             
             // Test the token immediately
             console.log(`[${new Date().toISOString()}] 🧪 Testing token with GraphQL endpoint...`);
-            await testToken(extractedToken.token);
+            await testToken(extractedData.token);
             
-            return extractedToken.token;
+            return extractedData.token;
         } else {
             console.log(`[${new Date().toISOString()}] ⚠️  Warning: Could not decode JWT expiration, assuming 59 minutes`);
-            currentAuthToken = extractedToken.token;
+            currentAuthToken = extractedData.token;
             tokenExpiryTime = new Date(Date.now() + 59 * 60 * 1000); // 59 minutes from now
-            return extractedToken.token;
+            return extractedData.token;
         }
         
     } catch (error) {
@@ -370,20 +418,24 @@ async function fetchAmazonJobs() {
         
         const headers = {
             'accept': '*/*',
-            'accept-language': 'en-US,en;q=0.7',
+            'accept-language': 'en-US,en;q=0.9',
             'authorization': `Bearer ${currentAuthToken}`,
             'content-type': 'application/json',
-            'country': 'Canada',
+            'country': 'US',
             'iscanary': 'false',
-            'priority': 'u=1, i',
-            'sec-ch-ua': '"Brave";v="129", "Not=A?Brand";v="8", "Chromium";v="129"',
-            'sec-ch-ua-mobile': '?0',
-            'sec-ch-ua-platform': '"macOS"',
-            'sec-fetch-dest': 'empty',
-            'sec-fetch-mode': 'cors',
-            'sec-fetch-site': 'cross-site',
-            'sec-gpc': '1'
+            'origin': 'https://hiring.amazon.com',
+            'referer': 'https://hiring.amazon.com/',
+            'user-agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+            'x-amz-user-agent': 'aws-amplify/5.0.0'
         };
+        
+        // Add API key if we have one
+        if (global.amazonApiKey) {
+            headers['x-api-key'] = global.amazonApiKey;
+            console.log(`[${new Date().toISOString()}] 🔑 Using extracted API key: ${global.amazonApiKey.substring(0, 20)}...`);
+        } else {
+            console.log(`[${new Date().toISOString()}] ⚠️  No API key available, using token only`);
+        }
         
         console.log(`[${new Date().toISOString()}] 📤 Sending GraphQL query...`);
         
