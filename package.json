@@ -4,10 +4,12 @@
   "description": "Amazon Warehouse Job Monitor for Telegram Alerts",
   "main": "auto-token-monitor.js",
   "scripts": {
-    "start": "node start-monitor.js",
-    "monitor": "node auto-token-monitor.js",
-    "token-test": "node token-extractor.js",
-    "dev": "nodemon start-monitor.js"
+    "start": "node --max-old-space-size=512 --expose-gc start-monitor.js",
+    "start-large": "node --max-old-space-size=1024 --expose-gc start-monitor.js",
+    "start-small": "node --max-old-space-size=256 --expose-gc start-monitor.js",
+    "monitor": "node --max-old-space-size=512 --expose-gc auto-token-monitor.js",
+    "token-test": "node --max-old-space-size=256 token-extractor.js",
+    "dev": "nodemon --max-old-space-size=512 --expose-gc start-monitor.js"
   },
   "dependencies": {
     "node-fetch": "^2.6.7",
