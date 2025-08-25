@@ -4,17 +4,20 @@
   "description": "Amazon Warehouse Job Monitor for Telegram Alerts",
   "main": "auto-token-monitor.js",
   "scripts": {
-    "start": "node auto-token-monitor.js",
-    "dev": "nodemon auto-token-monitor.js"
+    "start": "node start-monitor.js",
+    "monitor": "node auto-token-monitor.js",
+    "token-test": "node token-extractor.js",
+    "dev": "nodemon start-monitor.js"
   },
   "dependencies": {
     "node-fetch": "^2.6.7",
-    "puppeteer": "^24.9.0"
+    "puppeteer": "^24.9.0",
+    "dotenv": "^16.3.1"
   },
   "devDependencies": {
     "nodemon": "^2.0.22"
   },
   "keywords": ["amazon", "jobs", "telegram", "monitor"],
-  "author": "Your Name",
+  "author": "Keyur Patel",
   "license": "MIT"
 }
