@@ -230,7 +230,7 @@ function formatJobForTelegram(job) {
         hour12: false
     });
     
-    let formatted = `-------------------------------------------\n`;
+    let formatted = `----------------------------\n`;
     formatted += `Shifts: ${job.scheduleCount || 1}\n`;
     formatted += `Location: ${job.locationName || job.city}\n`;
     formatted += `Type: ${job.jobTypeL10N || job.employmentTypeL10N || 'Flex Time'}\n`;
@@ -245,7 +245,7 @@ function formatJobForTelegram(job) {
     }
     
     formatted += `Time: ${timeString}\n`;
-    formatted += `-------------------------------------------`;
+    formatted += `------------------------------`;
     
     return formatted;
 }
