@@ -44,7 +44,7 @@ let config = null;
 let seenJobIds = new Set();
 let currentAuthToken = null;
 
-// Amazon GraphQL Query
+// Amazon GraphQL Queries
 const amazonQuery = {
     "operationName": "searchJobCardsByLocation",
     "variables": {
@@ -103,6 +103,67 @@ const amazonQuery = {
                 geoClusterDescription
                 distance
             }
+        }
+    }`
+};
+
+// Schedule query to get detailed schedule information for a specific job
+const scheduleQuery = {
+    "operationName": "searchScheduleCards",
+    "variables": {
+        "searchScheduleRequest": {
+            "locale": "en-CA",
+            "country": "Canada",
+            "keyWords": "",
+            "equalFilters": [],
+            "containFilters": [
+                {
+                    "key": "isPrivateSchedule",
+                    "val": ["false"]
+                }
+            ],
+            "rangeFilters": [],
+            "orFilters": [],
+            "dateFilters": [
+                {
+                    "key": "firstDayOnSite",
+                    "range": { "startDate": new Date().toISOString().split('T')[0] }
+                }
+            ],
+            "sorters": [
+                {
+                    "fieldName": "totalPayRateMax",
+                    "ascending": "false"
+                }
+            ],
+            "pageSize": 1000,
+            "jobId": ""
+        }
+    },
+    "query": `query searchScheduleCards($searchScheduleRequest: SearchScheduleRequest!) {
+        searchScheduleCards(searchScheduleRequest: $searchScheduleRequest) {
+            nextToken
+            scheduleCards {
+                scheduleId
+                jobId
+                firstDayOnSite
+                hoursPerWeek
+                totalPayRate
+                totalPayRateL10N
+                basePay
+                basePayL10N
+                signOnBonus
+                signOnBonusL10N
+                city
+                state
+                address
+                employmentType
+                employmentTypeL10N
+                scheduleType
+                scheduleTypeL10N
+                __typename
+            }
+            __typename
         }
     }`
 };
@@ -215,8 +276,67 @@ async function fetchAmazonJobs() {
     }
 }
 
+// Fetch schedules for a specific job
+async function fetchJobSchedules(jobId, token) {
+    try {
+        console.log(`[${new Date().toISOString()}] 📅 Fetching schedules for job: ${jobId}`);
+        
+        // Update the schedule query with the specific job ID
+        const queryWithJobId = {
+            ...scheduleQuery,
+            variables: {
+                ...scheduleQuery.variables,
+                searchScheduleRequest: {
+                    ...scheduleQuery.variables.searchScheduleRequest,
+                    jobId: jobId
+                }
+            }
+        };
+        
+        const headers = {
+            'accept': '*/*',
+            'accept-language': 'en-CA,en;q=0.9',
+            'authorization': `Bearer ${token}`,
+            'content-type': 'application/json',
+            'country': 'Canada',
+            'iscanary': 'false',
+            'origin': 'https://hiring.amazon.ca',
+            'referer': 'https://hiring.amazon.ca/',
+            'user-agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+            'x-amz-user-agent': 'aws-amplify/5.0.0'
+        };
+        
+        const response = await fetch(AMAZON_GRAPHQL_URL, {
+            method: 'POST',
+            headers: headers,
+            body: JSON.stringify(queryWithJobId)
+        });
+        
+        if (!response.ok) {
+            console.log(`[${new Date().toISOString()}] ⚠️  Schedule fetch failed for job ${jobId}: ${response.status}`);
+            return [];
+        }
+        
+        const data = await response.json();
+        
+        if (data.errors) {
+            console.log(`[${new Date().toISOString()}] ⚠️  Schedule query errors for job ${jobId}:`, data.errors);
+            return [];
+        }
+        
+        const schedules = data.data?.searchScheduleCards?.scheduleCards || [];
+        console.log(`[${new Date().toISOString()}] ✅ Found ${schedules.length} schedules for job ${jobId}`);
+        
+        return schedules;
+        
+    } catch (error) {
+        console.error(`[${new Date().toISOString()}] ❌ Error fetching schedules for job ${jobId}:`, error.message);
+        return [];
+    }
+}
+
 // Format job for Telegram message
-function formatJobForTelegram(job) {
+async function formatJobForTelegram(job, token) {
     // Get current time in a readable format
     const now = new Date();
     const timeString = now.toLocaleString('en-CA', {
@@ -245,6 +365,32 @@ function formatJobForTelegram(job) {
     }
     
     formatted += `Time: ${timeString}\n\n`;
+    
+    // Fetch and add schedule information
+    try {
+        const schedules = await fetchJobSchedules(job.jobId, token);
+        if (schedules.length > 0) {
+            formatted += `📅 Available Schedules:\n`;
+            schedules.forEach((schedule, index) => {
+                formatted += `   ${index + 1}. Schedule ID: ${schedule.scheduleId}\n`;
+                if (schedule.firstDayOnSite) {
+                    formatted += `      Start: ${schedule.firstDayOnSite}\n`;
+                }
+                if (schedule.hoursPerWeek) {
+                    formatted += `      Hours: ${schedule.hoursPerWeek}/week\n`;
+                }
+                if (schedule.totalPayRateL10N) {
+                    formatted += `      Pay: ${schedule.totalPayRateL10N}\n`;
+                }
+                formatted += `\n`;
+            });
+        } else {
+            formatted += `📅 No schedules available\n\n`;
+        }
+    } catch (error) {
+        formatted += `📅 Schedule info unavailable\n\n`;
+    }
+    
     formatted += `Link: https://hiring.amazon.ca/app#/jobDetail?jobId=${job.jobId}&locale=en-CA\n`;
     formatted += `------------------------------`;
     
@@ -265,8 +411,11 @@ async function sendTelegramAlert(jobs) {
         for (let i = 0; i < jobs.length && i < MAX_JOBS_PER_ALERT; i++) {
             const job = jobs[i];
             
+            // Get current valid token for schedule fetching
+            const token = await ensureValidToken();
+            
             // Simple message with just the formatted job info
-            const message = formatJobForTelegram(job);
+            const message = await formatJobForTelegram(job, token);
             
             const telegramResponse = await fetch(`https://api.telegram.org/bot${config.TELEGRAM_BOT_TOKEN}/sendMessage`, {
                 method: 'POST',
