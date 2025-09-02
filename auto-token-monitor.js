@@ -231,10 +231,10 @@ function formatJobForTelegram(job) {
     });
     
     let formatted = `----------------------------\n`;
-    formatted += `Shifts: ${job.scheduleCount || 1}\n`;
     formatted += `Location: ${job.locationName || job.city}\n`;
+    formatted += `Shifts: ${job.scheduleCount || 1}\n`;
     formatted += `Type: ${job.jobTypeL10N || job.employmentTypeL10N || 'Flex Time'}\n`;
-    formatted += `Job: ${job.jobTitle}\n`;
+    formatted += `Job: ${job.jobId}\n`;
     
     if (job.totalPayRateMinL10N && job.totalPayRateMaxL10N) {
         formatted += `Pay: ${job.totalPayRateMinL10N} - ${job.totalPayRateMaxL10N}\n`;
@@ -244,7 +244,8 @@ function formatJobForTelegram(job) {
         formatted += `Pay: See posting\n`;
     }
     
-    formatted += `Time: ${timeString}\n`;
+    formatted += `Time: ${timeString}\n\n`;
+    formatted += `Link: https://hiring.amazon.ca/app#/jobDetail?jobId=${job.jobId}&locale=en-CA\n`;
     formatted += `------------------------------`;
     
     return formatted;
@@ -274,8 +275,7 @@ async function sendTelegramAlert(jobs) {
                 },
                 body: JSON.stringify({
                     chat_id: config.TELEGRAM_CHANNEL_ID,
-                    text: message,
-                    parse_mode: 'HTML'
+                    text: message
                 })
             });
 
